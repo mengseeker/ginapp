@@ -6,7 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.uber.org/zap"
 )
 
 var (
@@ -16,17 +16,15 @@ var (
 	}
 )
 
-func Health(c *gin.Context) {
-	c.String(http.StatusOK, "ok")
-}
-
-func Metrics(c *gin.Context) {
-	promhttp.Handler().ServeHTTP(c.Writer, c.Request)
-}
-
 func MidRecovery() gin.HandlerFunc {
-	return gin.CustomRecovery(func(c *gin.Context, err interface{}) {
+	return gin.CustomRecoveryWithWriter(nil, func(c *gin.Context, err interface{}) {
+		// 和AbortDirect配合，支持通过panic方式直接返回错误
+		if e, ok := err.(Response); ok {
+			c.JSON(http.StatusOK, e)
+			return
+		}
 		R(c, CodeServerError, "ServerError", nil)
+		logger.With(loggerFields(c)...).With(zap.Stack("stacks")).Errorf("panic: %v", err)
 		// h.Error(c, err)
 	})
 }

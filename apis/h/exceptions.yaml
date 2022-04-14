@@ -1,0 +1,11 @@
+# 定义异常返回
+# languages template 采用fprintf语法
+needLogin:
+  code: 10000
+  languages:
+    zh_CN: 请登录
+    en_US: need login
+vals:
+  code: 10001
+  languages:
+    zh_CN: "vals count: %d, time: %s"

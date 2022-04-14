@@ -3,17 +3,11 @@ package apis
 import (
 	"ginapp/apis/h"
 	v1 "ginapp/apis/v1"
+	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
-
-func Mount(g *gin.RouterGroup) {
-	// global apis
-	g.GET("/health", h.Health)
-	g.GET("/metrics", h.Metrics)
-
-	v1.Mount(g)
-}
 
 func Serve(addr string) error {
 	gin.SetMode(gin.ReleaseMode)
@@ -32,4 +26,20 @@ func Serve(addr string) error {
 	Mount(&router.RouterGroup)
 
 	return router.Run(addr)
+}
+
+func Mount(g *gin.RouterGroup) {
+	// global apis
+	g.GET("/health", Health)
+	g.GET("/metrics", Metrics)
+
+	v1.Mount(g)
+}
+
+func Health(c *gin.Context) {
+	c.String(http.StatusOK, "ok")
+}
+
+func Metrics(c *gin.Context) {
+	promhttp.Handler().ServeHTTP(c.Writer, c.Request)
 }

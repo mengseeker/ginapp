@@ -7,12 +7,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const (
-	CodeServerError = -1
-	CodeOK          = 0
-	CodeException   = 110
-)
-
 type Response struct {
 	Code      int         `json:"code"`
 	Message   string      `json:"message"`
@@ -36,5 +30,5 @@ func RR(c *gin.Context, data interface{}) {
 }
 
 func RE(c *gin.Context, msg string) {
-	R(c, CodeOK, msg, nil)
+	R(c, CodeExceptionDefault, msg, nil)
 }
