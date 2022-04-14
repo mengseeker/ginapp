@@ -1,0 +1,36 @@
+version: "3.8"
+services:
+  mysql:
+    image: "mysql"
+    ports:
+    - 3306:3306
+    environment:
+      MYSQL_ROOT_PASSWORD: "123456"
+      MYSQL_DATABASE: "dev"
+    entrypoint:
+    - "docker-entrypoint.sh"
+    - "--default-authentication-plugin=mysql_native_password"
+    # restart: always
+
+  redis:
+    image: "redis:5-alpine"
+    ports:
+    - 6379:6379
+    command: --requirepass "123456"
+    # restart: always
+  
+  app:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    depends_on:
+    - mysql
+    - redis
+    environment:
+      DEBUG: 1
+    ports:
+    - 8080:8080
+    volumes:
+    - ./app.yaml:/gowork/app.yaml
+    command: /gowork/app serve
+    restart: always
