@@ -17,3 +17,6 @@ tidy:
 
 vendor: tidy
 	go mod vendor
+
+generate:
+	go generate ./...

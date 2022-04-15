@@ -22,9 +22,34 @@ THE SOFTWARE.
 package cmd
 
 import (
+	"fmt"
 	"ginapp/cmd/migrate"
+	"ginapp/models"
 
 	"github.com/spf13/cobra"
+	"gorm.io/gorm"
+)
+
+//go:generate stringer -type Migration -linecomment
+type Migration int
+type MigrateAction func(db *gorm.DB) error
+
+const (
+	// 执行顺序从后到前
+	MAuto Migration = iota
+	MUser1
+
+	MCount
+)
+
+var (
+	Migrates [MCount]bool
+
+	// registry migrations
+	migrations = map[Migration]MigrateAction{
+		MAuto:  migrate.AutoMigrate,
+		MUser1: migrate.User1,
+	}
 )
 
 // migrateCmd represents the migrate command
@@ -35,7 +60,7 @@ var migrateCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		var err error
 		InitDB()
-		if err = migrate.Migrate(); err != nil {
+		if err = Migrate(); err != nil {
 			panic(err)
 		}
 	},
@@ -53,4 +78,21 @@ func init() {
 	// Cobra supports local flags which will only run when this command
 	// is called directly, e.g.:
 	// migrateCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+	migrateCmd.Flags().BoolVar(&Migrates[MAuto], "auto", true, "do AutoMigrate")
+	migrateCmd.Flags().BoolVar(&Migrates[MUser1], "muser1", false, "remove field age for table uses")
+}
+
+func Migrate() error {
+	var err error
+	migdb := models.DB.Debug()
+	for i := MCount - 1; i >= 0; i-- {
+		if Migrates[i] {
+			if m, ok := migrations[i]; ok {
+				if err = m(migdb); err != nil {
+					return fmt.Errorf("%s: %v", i, err)
+				}
+			}
+		}
+	}
+	return nil
 }
