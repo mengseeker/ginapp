@@ -3,12 +3,12 @@ package worker
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"ginapp/pkg/log"
 	"time"
 )
 
 type Worker interface {
-	Perform(ctx context.Context, logger *log.Logger)
+	Perform(ctx context.Context, logger *log.Logger) error
 }
 
 type WorkerName string

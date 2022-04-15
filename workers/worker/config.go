@@ -3,6 +3,8 @@ package worker
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type WorkConfig struct {
@@ -17,6 +19,19 @@ type WorkConfig struct {
 	RetryCount int
 	Error      string
 	WorkerRaw  []byte
+}
+
+func NewWorkConfig(name WorkerName, raw []byte) *WorkConfig {
+	return &WorkConfig{
+		ID:        uuid.NewString(),
+		Name:      name,
+		WorkerRaw: raw,
+		Retry:     WorkerDefaultRetryCount,
+		Timeout:   WorkerDefaultTimeout,
+		Queue:     QueueLow,
+
+		CreatedAt: time.Now(),
+	}
 }
 
 func (c WorkConfig) Marshal() []byte {

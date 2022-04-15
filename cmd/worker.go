@@ -22,54 +22,35 @@ THE SOFTWARE.
 package cmd
 
 import (
-	"ginapp/apis"
-	"ginapp/models"
-	"ginapp/pkg/log"
 	"ginapp/workers"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
-var logger = log.NewLogger()
-
-// serveCmd represents the serve command
-var serveCmd = &cobra.Command{
-	Use:   "serve",
-	Short: "start server",
-	Long:  `start server`,
+// workerCmd represents the worker command
+var workerCmd = &cobra.Command{
+	Use:   "worker",
+	Short: "start worker",
+	Long:  `.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		InitDB()
-		addr := ":8080"
-		logger.Infof("Listening and serving HTTP on %s", addr)
-		apis.Serve(addr)
+		InitWorker()
+
+		if err := workers.RunLoop(); err != nil {
+			panic(err)
+		}
 	},
 }
 
-func InitDB() {
-	logger.Info("Connect to db")
-	if err := models.Connect(viper.GetString("db")); err != nil {
-		panic(err)
-	}
-}
-
-func InitWorker() {
-	logger.Info("init worker")
-	if err := workers.Initialize(viper.GetString("workerRedisURL")); err != nil {
-		panic(err)
-	}
-}
-
 func init() {
-	rootCmd.AddCommand(serveCmd)
+	rootCmd.AddCommand(workerCmd)
 
 	// Here you will define your flags and configuration settings.
 
 	// Cobra supports Persistent Flags which will work for this command
 	// and all subcommands, e.g.:
-	// serveCmd.PersistentFlags().String("foo", "", "A help for foo")
+	// workerCmd.PersistentFlags().String("foo", "", "A help for foo")
 
 	// Cobra supports local flags which will only run when this command
 	// is called directly, e.g.:
-	// serveCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+	// workerCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 }

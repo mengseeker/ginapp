@@ -4,25 +4,34 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"ginapp/pkg/log"
+	"sync"
 	"time"
 
 	"github.com/gomodule/redigo/redis"
-	"github.com/google/uuid"
 )
 
 type Runner interface {
 	Declare(name WorkerName, work Worker, opts ...WorkerOption) (*WorkConfig, error)
 	RegistryWorker(name WorkerName, m WorkerMarshaler, um WorkerUnMarshaler)
+	RunLoop(logger *log.Logger) error
 }
 
 var (
 	_ Runner = &RedisRunner{}
 
 	ErrWorkerNotRegistry = errors.New("unregistry worker")
+
+	RedisPrefix = "worker_"
+
+	RedisKeyWokers           = RedisPrefix + "workers" // 存储work数据
+	RedisKeyWaitQueue        = RedisPrefix + "wait"    // 待调度
+	RedisKeyReadyQueuePrefix = RedisPrefix + "ready_"  // 就绪队列
 )
 
 type RedisRunner struct {
 	redisCli        redis.Conn
+	redisLocker     sync.Mutex
 	RegistryWorkers map[WorkerName]workerRegistry
 }
 
@@ -39,7 +48,8 @@ func NewRedisRunner(redisUrl string, opts ...redis.DialOption) (*RedisRunner, er
 		return nil, err
 	}
 	return &RedisRunner{
-		redisCli: redisCli,
+		redisCli:        redisCli,
+		RegistryWorkers: map[WorkerName]workerRegistry{},
 	}, nil
 }
 
@@ -56,8 +66,22 @@ func (r *RedisRunner) Declare(name WorkerName, work Worker, opts ...WorkerOption
 }
 
 func (r *RedisRunner) postToRedis(c *WorkConfig) error {
-	// raw := c.marshal()
-
+	r.redisLocker.Lock()
+	defer r.redisLocker.Unlock()
+	raw := c.Marshal()
+	r.redisCli.Send("MULTI")
+	r.redisCli.Send("HSET", RedisKeyWokers, c.ID, raw)
+	if c.PerformAt != nil && c.PerformAt.After(time.Now()) {
+		r.redisCli.Send("ZADD", RedisKeyWaitQueue, c.PerformAt.Unix(), c.ID)
+	} else {
+		r.redisCli.Send("LPUSH", RedisKeyReadyQueuePrefix+string(c.Queue), c.ID)
+	}
+	_, err := r.redisCli.Do("EXEC")
+	// reply, err := r.redisCli.Do("EXEC")
+	// fmt.Println("============", reply)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -72,6 +96,12 @@ func (r *RedisRunner) RegistryWorker(name WorkerName, m WorkerMarshaler, um Work
 	}
 }
 
+// TODO
+func (r *RedisRunner) RunLoop(logger *log.Logger) error {
+	<-time.After(time.Second * 30)
+	return errors.New("test")
+}
+
 func (r *RedisRunner) newConfig(name WorkerName, work Worker) (*WorkConfig, error) {
 	wr, ok := r.RegistryWorkers[name]
 	if !ok {
@@ -81,14 +111,5 @@ func (r *RedisRunner) newConfig(name WorkerName, work Worker) (*WorkConfig, erro
 	if err != nil {
 		return nil, err
 	}
-	return &WorkConfig{
-		ID:        uuid.NewString(),
-		Name:      name,
-		WorkerRaw: raw,
-		Retry:     WorkerDefaultRetryCount,
-		Timeout:   WorkerDefaultTimeout,
-		Queue:     QueueLow,
-
-		CreatedAt: time.Now(),
-	}, nil
+	return NewWorkConfig(name, raw), nil
 }

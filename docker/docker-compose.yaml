@@ -16,7 +16,7 @@ services:
     image: "redis:5-alpine"
     ports:
     - 6379:6379
-    command: --requirepass "123456"
+    # command: --requirepass "123456"
     # restart: always
   
   app:
@@ -33,4 +33,18 @@ services:
     volumes:
     - ./app.yaml:/gowork/app.yaml
     command: /gowork/app serve
+    restart: always
+
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    depends_on:
+    - mysql
+    - redis
+    environment:
+      DEBUG: 1
+    volumes:
+    - ./app.yaml:/gowork/app.yaml
+    command: /gowork/app worker
     restart: always

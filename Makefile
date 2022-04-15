@@ -1,9 +1,5 @@
 image ?= app:latest
 
-.PHONY: generate_src
-generate_src:
-	go generate ./...
-
 .PHONY: docker_build
 docker_build:
 	docker build -t ${image} -f Dockerfile .
