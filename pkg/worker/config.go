@@ -17,6 +17,7 @@ type WorkConfig struct {
 
 	CreatedAt  time.Time
 	RetryCount int
+	Success    bool
 	Error      string
 	WorkerRaw  []byte
 }

@@ -7,6 +7,7 @@ require (
 	github.com/go-resty/resty/v2 v2.7.0
 	github.com/gomodule/redigo v1.8.8
 	github.com/google/uuid v1.3.0
+	github.com/panjf2000/ants/v2 v2.4.8
 	github.com/prometheus/client_golang v1.12.1
 	github.com/spf13/cobra v1.4.0
 	github.com/spf13/viper v1.11.0

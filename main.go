@@ -21,7 +21,9 @@ THE SOFTWARE.
 */
 package main
 
-import "ginapp/cmd"
+import (
+	"ginapp/cmd"
+)
 
 func main() {
 	cmd.Execute()

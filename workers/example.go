@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"ginapp/pkg/log"
-	"ginapp/workers/worker"
+	"ginapp/pkg/worker"
 	"time"
 )
 
