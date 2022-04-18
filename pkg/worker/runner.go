@@ -210,20 +210,21 @@ func (r *RedisRunner) batchTransWaitQueue(ctx context.Context) (int, bool) {
 			r.l.Errorf("unable to pull data: %v", err)
 			return
 		}
+		if len(batch) > 0 {
+			idHSet := r.splitWaitQueueIDs(batch)
 
-		idHSet := r.splitWaitQueueIDs(batch)
+			err = r.batchPostToQueue(idHSet)
+			if err != nil {
+				r.l.Errorf("unalbe to post: %v", err)
+			}
 
-		err = r.batchPostToQueue(idHSet)
-		if err != nil {
-			r.l.Errorf("unalbe to post: %v", err)
+			err = r.batchRemoveWaitQueue(batch)
+			if err != nil {
+				r.l.Errorf("unalbe to remove: %v", err)
+			}
+
+			count = len(batch)
 		}
-
-		err = r.batchRemoveeWaitQueue(batch)
-		if err != nil {
-			r.l.Errorf("unalbe to remove: %v", err)
-		}
-
-		count = len(batch)
 	})
 	if err != nil {
 		r.l.Errorf("unable to get locker: %s, err: %v", RedisKeyWaitQueueLocker, err)
@@ -233,21 +234,19 @@ func (r *RedisRunner) batchTransWaitQueue(ctx context.Context) (int, bool) {
 }
 
 func (r *RedisRunner) batchPullWaitQueue(endAt int64) ([]string, error) {
-	reply, err := r.redisCli.Do("ZRANGEBYSCORE", RedisKeyWaitQueue, "-INF", endAt, "LIMIT", 0, WaitQueueCatchBatchSize)
-	if err != nil {
-		return nil, err
+	reply, err := redis.Strings(
+		r.redisCli.Do("ZRANGEBYSCORE", RedisKeyWaitQueue, "-INF", endAt, "LIMIT", 0, WaitQueueCatchBatchSize),
+	)
+	if err == redis.ErrNil {
+		return nil, nil
 	}
-	batch, ok := reply.([]string)
-	if !ok {
-		return nil, fmt.Errorf(" bad reply: %#v", reply)
-	}
-	return batch, nil
+	return reply, nil
 }
 
 func (r *RedisRunner) batchPostToQueue(ids map[string][]string) error {
 	for quque, id := range ids {
 		key := RedisKeyReadyQueuePrefix + quque
-		_, err := r.redisCli.Do("LPUSH", key, redis.Args{}.AddFlat(id))
+		_, err := r.redisCli.Do("LPUSH", redis.Args{}.Add(key).AddFlat(id)...)
 		if err != nil {
 			return err
 		}
@@ -255,8 +254,17 @@ func (r *RedisRunner) batchPostToQueue(ids map[string][]string) error {
 	return nil
 }
 
-func (r *RedisRunner) batchRemoveeWaitQueue(batch []string) error {
-	_, err := r.redisCli.Do("ZREM", RedisKeyWaitQueue, redis.Args{}.AddFlat(batch))
+func (r *RedisRunner) batchRemoveWaitQueue(batch []string) error {
+	// 这里不能使用多参数删除，可能时参数太多导致报错
+	// _, err := r.redisCli.Do("ZREM", redis.Args{}.Add(RedisKeyWaitQueue).AddFlat(batch)...)
+	for _, i := range batch {
+		r.redisCli.Send("ZREM", RedisKeyWaitQueue, i)
+	}
+	var err error
+	if err = r.redisCli.Flush(); err == nil {
+		_, err = r.redisCli.Receive()
+
+	}
 	return err
 }
 

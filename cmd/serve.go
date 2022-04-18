@@ -40,7 +40,8 @@ var serveCmd = &cobra.Command{
 	Long:  `start server`,
 	Run: func(cmd *cobra.Command, args []string) {
 		InitDB()
-		addr := ":8080"
+		InitWorker()
+		addr := viper.GetString("listenAddr")
 		logger.Infof("Listening and serving HTTP on %s", addr)
 		apis.Serve(addr)
 	},

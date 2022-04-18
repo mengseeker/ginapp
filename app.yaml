@@ -1,2 +1,3 @@
-db: "root:123456@tcp(127.0.0.1:3306)/dbname?charset=utf8mb4&parseTime=True&loc=Local"
+listenAddr: :8080
+db: "root:123456@tcp(127.0.0.1:3306)/dev?charset=utf8mb4&parseTime=True&loc=Local"
 workerRedisURL: redis://@localhost:6379/0

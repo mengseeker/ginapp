@@ -1,2 +1,3 @@
+listenAddr: :8080
 db: "root:123456@tcp(mysql:3306)/dev?charset=utf8mb4&parseTime=True&loc=Local"
 workerRedisURL: redis://@redis:6379/0

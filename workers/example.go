@@ -3,29 +3,35 @@ package workers
 import (
 	"context"
 	"errors"
-	"fmt"
 	"ginapp/pkg/log"
 	"ginapp/pkg/worker"
 	"time"
 )
 
-type ExampleWorker struct{}
-
-func (b *ExampleWorker) Perform(ctx context.Context, l *log.Logger) error {
-	l.Info("BaiduWorker running")
-	return errors.New("retry")
+type ExampleWorker struct {
+	Timeout *time.Duration
+	Panic   bool
+	Error   string
 }
 
-func TestExample() {
-	w, err := Runner.Declare(
+func (w *ExampleWorker) Perform(ctx context.Context, l *log.Logger) error {
+	l.Info("ExampleWorker running")
+	if w.Timeout != nil {
+		time.Sleep(*w.Timeout)
+	}
+	if w.Panic {
+		panic("ExampleWorker")
+	}
+	if w.Error != "" {
+		return errors.New(w.Error)
+	}
+	return nil
+}
+
+func (w *ExampleWorker) Declare(opts ...worker.WorkerOption) (*worker.WorkConfig, error) {
+	return Runner.Declare(
 		"ExampleWorker",
 		&ExampleWorker{},
-		worker.WithRetry(3),
-		worker.WithPerformAt(time.Now().Add(time.Second*3)),
-		worker.WithQueue(worker.QueueHigh),
+		opts...,
 	)
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println(w.ID)
 }
