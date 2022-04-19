@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"ginapp/apis/h"
 	"ginapp/pkg/worker"
 	"ginapp/workers"
 	"time"
@@ -13,6 +14,7 @@ func exampleWorker(c *gin.Context) {
 	var r *worker.WorkConfig
 	var err error
 	w := workers.ExampleWorker{}
+	h.Infof(c, "create worker type: %s", t)
 	switch t {
 	case "panic":
 		w.Panic = true
@@ -29,6 +31,10 @@ func exampleWorker(c *gin.Context) {
 		r, err = w.Declare()
 	case "delay":
 		r, err = w.Declare(worker.WithPerformAt(time.Now().Add(10 * time.Second)))
+	case "bench":
+		for i := 0; i < 100000; i++ {
+			w.Declare(worker.WithPerformAt(time.Now().Add(10 * time.Second)))
+		}
 	default:
 		r, err = w.Declare()
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"ginapp/pkg/log"
 	"ginapp/pkg/util"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -28,16 +29,24 @@ var (
 )
 
 const (
+	RunnerAliveStatusTTL = 30 // runner存活状态持续时间
+
 	RedisPrefix = "worker_"
 
-	RedisKeyWokers           = RedisPrefix + "workers"     // 存储work数据
-	RedisKeyWaitQueue        = RedisPrefix + "wait"        // 等待队列
-	RedisKeyReadyQueuePrefix = RedisPrefix + "ready_"      // 就绪队列
-	RedisKeyWaitQueueLocker  = RedisPrefix + "wait_locker" // 等待队列锁
+	RedisKeyWokers             = RedisPrefix + "workers"        // 存储work数据
+	RedisKeyRunnerAlivePrefix  = RedisPrefix + "alive"          // 设置runner存活状态
+	RedisKeyWaitQueue          = RedisPrefix + "wait"           // 等待队列
+	RedisKeyWaitQueueLocker    = RedisPrefix + "wait_locker"    // 等待队列锁
+	RedisKeyReadyQueuePrefix   = RedisPrefix + "ready_"         // 就绪队列
+	RedisKeyReadyQueueLocker   = RedisPrefix + "ready_locker"   // 就绪队列锁
+	ReadyQueueLockTerm         = 60 * time.Second               // 就绪队列锁有效期
+	RedisKeyWorking            = RedisPrefix + "working"        // 工作空间
+	RedisKeyWorkingCheckLocker = RedisPrefix + "working_locker" // 工作空间状态检查锁
+	WorkingCheckLockerTerm     = 6 * time.Minute                // 工作空间状态检查锁超时时间
 
-	WaitQueueCatchMissingWait = 30 * time.Second // 等待队列线程未获取锁时，等待时间
+	WaitQueueCatchMissingWait = 10 * time.Second // 等待队列线程未获取锁时，等待时间
 	WaitQueueCatchEmptyWait   = 1 * time.Second  // 等待队列线程
-	WaitQueueLockTerm         = 10 * time.Second // 等待队列锁有效期
+	WaitQueueLockTerm         = 60 * time.Second // 等待队列锁有效期
 	WaitQueueCatchBatchSize   = 100              // 等待队列转移批次大小
 	WaitQueueDataIDSeparator  = "::"             // 等待队列内存储队列名称和ID，使用分隔符连接
 
@@ -60,8 +69,7 @@ type RedisRunnerStatus struct {
 // 任务失败次数超过重试阈值后，任务丢弃
 type RedisRunner struct {
 	ID              string
-	redisCli        redis.Conn
-	redisLocker     sync.Mutex
+	redisPool       *redis.Pool
 	RegistryWorkers map[WorkerName]workerRegistry
 
 	threads uint
@@ -90,15 +98,16 @@ type workerRegistry struct {
 }
 
 func NewRedisRunner(redisUrl string, threads uint, logger *log.Logger, opts ...redis.DialOption) (*RedisRunner, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	redisCli, err := redis.DialURLContext(ctx, redisUrl, opts...)
-	if err != nil {
-		return nil, err
+	pool := &redis.Pool{
+		Dial: func() (redis.Conn, error) {
+			return redis.DialURL(redisUrl, opts...)
+		},
+		MaxIdle:     3,
+		IdleTimeout: 240 * time.Second,
 	}
 	r := RedisRunner{
 		ID:              time.Now().Format(time.RFC3339Nano),
-		redisCli:        redisCli,
+		redisPool:       pool,
 		RegistryWorkers: map[WorkerName]workerRegistry{},
 		wg:              sync.WaitGroup{},
 		threads:         threads,
@@ -108,6 +117,7 @@ func NewRedisRunner(redisUrl string, threads uint, logger *log.Logger, opts ...r
 		needPull:        make(chan bool),
 		batchPull:       make(chan int),
 	}
+	var err error
 	// 设置成1小时，不使用ants超时控制
 	r.execPool, err = antsv2.NewPoolWithFunc(
 		int(threads),
@@ -131,18 +141,18 @@ func (r *RedisRunner) Declare(name WorkerName, work Worker, opts ...WorkerOption
 }
 
 func (r *RedisRunner) postToRedis(c *WorkConfig) error {
-	r.redisLocker.Lock()
-	defer r.redisLocker.Unlock()
 	raw := c.Marshal()
-	r.redisCli.Send("MULTI")
-	r.redisCli.Send("HSET", RedisKeyWokers, c.ID, raw)
+	conn := r.redisPool.Get()
+	defer conn.Close()
+	conn.Send("MULTI")
+	conn.Send("HSET", RedisKeyWokers, c.ID, raw)
 	if c.PerformAt != nil && c.PerformAt.After(time.Now()) {
 		val := string(c.Queue) + WaitQueueDataIDSeparator + c.ID
-		r.redisCli.Send("ZADD", RedisKeyWaitQueue, c.PerformAt.Unix(), val)
+		conn.Send("ZADD", RedisKeyWaitQueue, c.PerformAt.Unix(), val)
 	} else {
-		r.redisCli.Send("LPUSH", RedisKeyReadyQueuePrefix+string(c.Queue), c.ID)
+		conn.Send("RPUSH", RedisKeyReadyQueuePrefix+string(c.Queue), c.ID)
 	}
-	_, err := r.redisCli.Do("EXEC")
+	_, err := conn.Do("EXEC")
 	// reply, err := r.redisCli.Do("EXEC")
 	// fmt.Println("============", reply)
 	if err != nil {
@@ -163,25 +173,95 @@ func (r *RedisRunner) RegistryWorker(name WorkerName, m WorkerMarshaler, um Work
 }
 
 func (r *RedisRunner) RunLoop(ctx context.Context) error {
+	// 设置当前runner存活状态
+	r.startRunnerAlive(ctx)
+	// 检查工作空间是否存在失败worker, 失败未处理worker重新投递
+	r.checkWorkingWorkers(ctx)
+	// 处理等待队列，将等待队列任务转移到就绪队列
 	r.startLoopTransWaitQueue(ctx)
+	// 抓取就绪队列任务到本地
 	r.startLoopPullWorker(ctx)
+	// 执行任务
 	r.startLoopExecWorker(ctx)
+	// 采集执行状态，通知信息
 	r.startLoopCollect(ctx)
 	<-ctx.Done()
 	r.wg.Wait()
 	return nil
 }
 
+func (r *RedisRunner) startRunnerAlive(ctx context.Context) {
+	r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+		tk := time.NewTicker(time.Second * RunnerAliveStatusTTL / 3)
+		defer tk.Stop()
+		conn := r.redisPool.Get()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tk.C:
+				conn.Do("SET", RedisKeyRunnerAlivePrefix+r.ID, "alive", "EX", RunnerAliveStatusTTL)
+			}
+		}
+	}()
+}
+
+// 启动时检查
+func (r *RedisRunner) checkWorkingWorkers(ctx context.Context) {
+	conn := r.redisPool.Get()
+	_, err := util.RedisLocker(conn, RedisKeyWorkingCheckLocker, r.ID, WorkingCheckLockerTerm, func() {
+		reply, err := redis.Strings(conn.Do("HGETALL", RedisKeyWorking))
+		if err != nil {
+			r.l.Errorf("unable to check working space: %v", err)
+			return
+		}
+		var aliveRunners = map[string]bool{r.ID: true}
+		var checkAliveRunner = func(runnerID string) bool {
+			if aliveRunners[runnerID] {
+				return true
+			}
+			_, err := redis.String(conn.Do("GET", RedisKeyRunnerAlivePrefix+runnerID))
+			if err == redis.ErrNil {
+				aliveRunners[runnerID] = false
+				return false
+			}
+			aliveRunners[runnerID] = true
+			return true
+		}
+		for i := 0; i < len(reply); i += 2 {
+			workerID := reply[i]
+			runnerID := reply[i+1]
+			if !checkAliveRunner(runnerID) {
+				wc, err := r.getWorkerConfig(conn, workerID)
+				if err != nil {
+					r.l.Errorf("unable to get workerConfig %q, err: %v", workerID, err)
+					conn.Do("HDEL", RedisKeyWorking, workerID)
+					continue
+				}
+				r.withWorkerLogger(wc).Warn("get lossed worker")
+				r.retryWorker(conn, wc)
+			}
+		}
+		r.l.Debug("working space checked")
+	})
+	if err != nil {
+		r.l.Errorf("unable to check working space, lock err: %v", err)
+	}
+}
+
 func (r *RedisRunner) startLoopTransWaitQueue(ctx context.Context) {
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
+		conn := r.redisPool.Get()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			default:
-				count, catch := r.batchTransWaitQueue(ctx)
+				count, catch := r.batchTransWaitQueue(conn, ctx)
 				if !catch {
 					// 如果未命中
 					time.Sleep(WaitQueueCatchMissingWait)
@@ -189,13 +269,13 @@ func (r *RedisRunner) startLoopTransWaitQueue(ctx context.Context) {
 					// 如果未加载到数据
 					time.Sleep(WaitQueueCatchEmptyWait)
 				}
-				r.l.Debugf("trans waitQueue %d", count)
+				// r.l.Debugf("pull wait queue: %d", count)
 			}
 		}
 	}()
 }
 
-func (r *RedisRunner) batchTransWaitQueue(ctx context.Context) (int, bool) {
+func (r *RedisRunner) batchTransWaitQueue(conn redis.Conn, ctx context.Context) (int, bool) {
 	defer func() {
 		if err := recover(); err != nil {
 			r.l.Errorf("recover: %v", err)
@@ -203,9 +283,9 @@ func (r *RedisRunner) batchTransWaitQueue(ctx context.Context) (int, bool) {
 	}()
 	// 获取WaitQueue独占锁
 	var count = 0
-	catch, err := util.RedisLocker(r.redisCli, RedisKeyWaitQueueLocker, r.ID, WaitQueueLockTerm, func() {
+	catch, err := util.RedisLocker(conn, RedisKeyWaitQueueLocker, r.ID, WaitQueueLockTerm, func() {
 		now := time.Now().Unix()
-		batch, err := r.batchPullWaitQueue(now)
+		batch, err := r.batchPullWaitQueue(conn, now)
 		if err != nil {
 			r.l.Errorf("unable to pull data: %v", err)
 			return
@@ -213,12 +293,12 @@ func (r *RedisRunner) batchTransWaitQueue(ctx context.Context) (int, bool) {
 		if len(batch) > 0 {
 			idHSet := r.splitWaitQueueIDs(batch)
 
-			err = r.batchPostToQueue(idHSet)
+			err = r.batchPostToQueue(conn, idHSet)
 			if err != nil {
 				r.l.Errorf("unalbe to post: %v", err)
 			}
 
-			err = r.batchRemoveWaitQueue(batch)
+			err = r.batchRemoveWaitQueue(conn, batch)
 			if err != nil {
 				r.l.Errorf("unalbe to remove: %v", err)
 			}
@@ -227,15 +307,15 @@ func (r *RedisRunner) batchTransWaitQueue(ctx context.Context) (int, bool) {
 		}
 	})
 	if err != nil {
-		r.l.Errorf("unable to get locker: %s, err: %v", RedisKeyWaitQueueLocker, err)
+		r.l.Error(err)
 		return 0, false
 	}
 	return count, catch
 }
 
-func (r *RedisRunner) batchPullWaitQueue(endAt int64) ([]string, error) {
+func (r *RedisRunner) batchPullWaitQueue(conn redis.Conn, endAt int64) ([]string, error) {
 	reply, err := redis.Strings(
-		r.redisCli.Do("ZRANGEBYSCORE", RedisKeyWaitQueue, "-INF", endAt, "LIMIT", 0, WaitQueueCatchBatchSize),
+		conn.Do("ZRANGEBYSCORE", RedisKeyWaitQueue, "-INF", endAt, "LIMIT", 0, WaitQueueCatchBatchSize),
 	)
 	if err == redis.ErrNil {
 		return nil, nil
@@ -243,10 +323,10 @@ func (r *RedisRunner) batchPullWaitQueue(endAt int64) ([]string, error) {
 	return reply, nil
 }
 
-func (r *RedisRunner) batchPostToQueue(ids map[string][]string) error {
+func (r *RedisRunner) batchPostToQueue(conn redis.Conn, ids map[string][]string) error {
 	for quque, id := range ids {
-		key := RedisKeyReadyQueuePrefix + quque
-		_, err := r.redisCli.Do("LPUSH", redis.Args{}.Add(key).AddFlat(id)...)
+		key := string(RedisKeyReadyQueuePrefix + quque)
+		_, err := conn.Do("RPUSH", redis.Args{}.Add(key).AddFlat(id)...)
 		if err != nil {
 			return err
 		}
@@ -254,16 +334,15 @@ func (r *RedisRunner) batchPostToQueue(ids map[string][]string) error {
 	return nil
 }
 
-func (r *RedisRunner) batchRemoveWaitQueue(batch []string) error {
+func (r *RedisRunner) batchRemoveWaitQueue(conn redis.Conn, batch []string) error {
 	// 这里不能使用多参数删除，可能时参数太多导致报错
 	// _, err := r.redisCli.Do("ZREM", redis.Args{}.Add(RedisKeyWaitQueue).AddFlat(batch)...)
 	for _, i := range batch {
-		r.redisCli.Send("ZREM", RedisKeyWaitQueue, i)
+		conn.Send("ZREM", RedisKeyWaitQueue, i)
 	}
 	var err error
-	if err = r.redisCli.Flush(); err == nil {
-		_, err = r.redisCli.Receive()
-
+	if err = conn.Flush(); err == nil {
+		_, err = conn.Receive()
 	}
 	return err
 }
@@ -281,19 +360,19 @@ func (r *RedisRunner) splitWaitQueueIDs(batch []string) map[string][]string {
 	return idHSet
 }
 
-// 将worker发送到execChan
 func (r *RedisRunner) startLoopPullWorker(ctx context.Context) {
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
-		r.batchPullReadyQueue()
+		conn := r.redisPool.Get()
+		r.batchPullReadyQueue(conn)
 		for {
 			select {
 			case <-ctx.Done():
 				close(r.execChan)
 				return
 			case <-r.needPull:
-				err := r.batchPullReadyQueue()
+				err := r.batchPullReadyQueue(conn)
 				if err != nil {
 					r.l.Error(err)
 					time.Sleep(time.Second)
@@ -304,8 +383,77 @@ func (r *RedisRunner) startLoopPullWorker(ctx context.Context) {
 }
 
 // 从就绪队列加载任务，需要处理优先级情况
-func (r *RedisRunner) batchPullReadyQueue() error {
-	// todo
+func (r *RedisRunner) batchPullReadyQueue(conn redis.Conn) error {
+	var batches []string
+	_, rerr := util.RedisLocker(conn, RedisKeyReadyQueueLocker, r.ID, ReadyQueueLockTerm, func() {
+		// get queue len
+		queueHighLen, err := redis.Int(conn.Do("LLEN", string(RedisKeyReadyQueuePrefix+QueueHigh)))
+		if err != nil {
+			r.l.Errorf("pull ready queue err: %v", err)
+		}
+		queueLowLen, err := redis.Int(conn.Do("LLEN", string(RedisKeyReadyQueuePrefix+QueueLow)))
+		if err != nil {
+			r.l.Errorf("pull ready queue err: %v", err)
+		}
+		// get should pull len
+		highCount, lowCount := r.shouldBachPullReadyCount(queueHighLen, queueLowLen)
+		if highCount == 0 && lowCount == 0 {
+			return
+		}
+		var highBatches, lowBatches []string
+		// pull
+		highBatches, err = r.doBatchPullReadyQueueWorker(conn, string(RedisKeyReadyQueuePrefix+QueueHigh), highCount)
+		if err == nil {
+			lowBatches, err = r.doBatchPullReadyQueueWorker(conn, string(RedisKeyReadyQueuePrefix+QueueLow), lowCount)
+		}
+		if err != nil {
+			r.l.Errorf("pull ready queue err: %v", err)
+			return
+		}
+
+		// add to working
+		batches = append(batches, highBatches...)
+		batches = append(batches, lowBatches...)
+		for _, i := range batches {
+			conn.Send("HSET", RedisKeyWorking, i, r.ID)
+		}
+		if err = conn.Flush(); err == nil {
+			_, err = conn.Receive()
+		}
+		if err != nil {
+			r.l.Errorf("pull ready queue err: %v", err)
+			return
+		}
+
+		// remove
+		_, err = conn.Do("LTRIM", RedisKeyReadyQueuePrefix+string(QueueHigh), highCount, -1)
+		if err == nil {
+			_, err = conn.Do("LTRIM", RedisKeyReadyQueuePrefix+string(QueueLow), lowCount, -1)
+		}
+		if err != nil {
+			r.l.Errorf("pull ready queue err: %v", err)
+			return
+		}
+	})
+	if rerr != nil {
+		return rerr
+	}
+
+	// send to execute
+	pullCount := len(batches)
+	if pullCount > 0 {
+		for _, workerID := range batches {
+			wc, err := r.getWorkerConfig(conn, workerID)
+			if err != nil {
+				r.l.Errorf("unable to get workerConfig %q, err: %v", workerID, err)
+				conn.Do("HDEL", RedisKeyWorking, workerID)
+				pullCount--
+			} else {
+				r.execChan <- wc
+			}
+		}
+		r.batchPull <- pullCount
+	}
 	return nil
 }
 
@@ -332,6 +480,8 @@ func (r *RedisRunner) startLoopCollect(ctx context.Context) {
 
 		notice := time.NewTimer(time.Second)
 		defer notice.Stop()
+
+		conn := r.redisPool.Get()
 		for {
 			select {
 			case <-ctx.Done():
@@ -346,7 +496,7 @@ func (r *RedisRunner) startLoopCollect(ctx context.Context) {
 				notice.Reset(time.Second)
 			case wc := <-r.execResult:
 				left--
-				r.dealResult(wc)
+				r.dealResult(conn, wc)
 				if left <= threshold {
 					select {
 					case r.needPull <- true:
@@ -360,42 +510,87 @@ func (r *RedisRunner) startLoopCollect(ctx context.Context) {
 	}()
 }
 
-func (r *RedisRunner) dealResult(wc *WorkConfig) {
+func (r *RedisRunner) dealResult(conn redis.Conn, wc *WorkConfig) {
 	if !wc.Success && wc.RetryCount < wc.Retry {
-		r.retryWorker(wc)
+		r.retryWorker(conn, wc)
 	} else {
-		r.removeWorker(wc)
+		if !wc.Success {
+			r.withWorkerLogger(wc).Warn("retry times over, remove")
+		}
+		r.removeWorker(conn, wc)
 	}
+}
+
+func (r *RedisRunner) doBatchPullReadyQueueWorker(conn redis.Conn, key string, count int) ([]string, error) {
+	if count <= 0 {
+		return nil, nil
+	}
+	return redis.Strings(conn.Do("LRANGE", key, 0, count-1))
+}
+
+func (r *RedisRunner) shouldBachPullReadyCount(queueHighLen, queueLowLen int) (queueHighCount int, queueLowCount int) {
+	queueLowCount = ReadyQueuePullBatchSize / 3
+	if queueLowLen < queueLowCount {
+		queueLowCount = queueLowLen
+	}
+	queueHighCount = ReadyQueuePullBatchSize - queueLowCount
+	if queueHighLen < queueHighCount {
+		queueHighCount = queueHighLen
+	}
+	if queueHighCount+queueLowCount < ReadyQueuePullBatchSize && queueLowLen > queueLowCount {
+		queueLowCount = ReadyQueuePullBatchSize - queueHighCount
+		if queueLowLen < queueLowCount {
+			queueLowCount = queueLowLen
+		}
+	}
+	return
 }
 
 func (r *RedisRunner) exec(wc *WorkConfig) {
 	r.execPool.Invoke(wc)
 }
 
-func (r *RedisRunner) retryWorker(wc *WorkConfig) {
+func (r *RedisRunner) retryWorker(conn redis.Conn, wc *WorkConfig) {
 	wc.RetryCount++
-	// todo
+	delay := wc.RetryCount
+	if delay > 10 {
+		delay = 10
+	}
+	delay = int(math.Pow(2, float64(delay)))
+	retryAt := time.Now().Add(time.Duration(delay) * time.Minute)
+	wc.PerformAt = &retryAt
+	var err error
+	if err = r.postToRedis(wc); err == nil {
+		_, err = conn.Do("HDEL", RedisKeyWorking, wc.ID)
+	}
+	if err != nil {
+		r.withWorkerLogger(wc).Errorf("unable to remove worker, err: %v", err)
+	}
 }
 
-func (r *RedisRunner) removeWorker(wc *WorkConfig) {
-	r.execPool.Invoke(wc)
-	// todo
+func (r *RedisRunner) removeWorker(conn redis.Conn, wc *WorkConfig) {
+	// 清除工作空间任务
+	_, err := conn.Do("HDEL", RedisKeyWorking, wc.ID)
+	if err == nil {
+		// 清除任务数据
+		_, err = conn.Do("HDEL", RedisKeyWokers, wc.ID)
+	}
+	if err != nil {
+		r.withWorkerLogger(wc).Errorf("unable to remove worker, err: %v", err)
+	}
 }
 
 func (r *RedisRunner) newExecWorkerFunc() func(item interface{}) {
 	return func(item interface{}) {
 		wc := item.(*WorkConfig)
-		l := r.l.With(
-			zap.String("name", string(wc.Name)),
-			zap.String("id", wc.ID),
-			zap.String("retry", fmt.Sprintf("%d/%d", wc.RetryCount, wc.Retry)),
-		)
-		l.Info("START")
+		l := r.withWorkerLogger(wc)
+		l.Info("START WORKER")
 
 		// 通知处理结果
 		defer func() {
 			if e := recover(); e != nil {
 				wc.Error = fmt.Sprintf("%v", e)
+				l.Errorf("panic: %s", wc.Error)
 			}
 			r.execResult <- wc
 		}()
@@ -418,13 +613,21 @@ func (r *RedisRunner) newExecWorkerFunc() func(item interface{}) {
 		ctx, cancel := context.WithTimeout(context.Background(), wc.Timeout)
 		defer cancel()
 		if err = worker.Perform(ctx, l); err != nil {
-			l.Errorf("perform worker: %v", err)
+			l.Errorf("perform worker err: %v", err)
 			wc.Error = err.Error()
 			return
 		}
 		wc.Success = true
 		l.Info("DONE")
 	}
+}
+
+func (r *RedisRunner) withWorkerLogger(wc *WorkConfig) *log.Logger {
+	return r.l.With(
+		zap.String("name", string(wc.Name)),
+		zap.String("id", wc.ID),
+		zap.String("retry", fmt.Sprintf("%d/%d", wc.RetryCount, wc.Retry)),
+	)
 }
 
 func (r *RedisRunner) newConfig(name WorkerName, work Worker) (*WorkConfig, error) {
@@ -437,4 +640,12 @@ func (r *RedisRunner) newConfig(name WorkerName, work Worker) (*WorkConfig, erro
 		return nil, err
 	}
 	return NewWorkConfig(name, raw), nil
+}
+
+func (r *RedisRunner) getWorkerConfig(conn redis.Conn, workerID string) (*WorkConfig, error) {
+	reply, err := redis.Bytes(conn.Do("HGET", RedisKeyWokers, workerID))
+	if err != nil {
+		return nil, err
+	}
+	return UnMarshal(reply)
 }

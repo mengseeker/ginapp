@@ -1,15 +1,16 @@
 package util
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/gomodule/redigo/redis"
 )
 
-func RedisLocker(cli redis.Conn, key string, val interface{}, ttl time.Duration, f func()) (bool, error) {
+func RedisLocker(cli redis.Conn, key, val string, ttl time.Duration, f func()) (bool, error) {
 	reply, err := cli.Do("SET", key, val, "EX", int(ttl.Seconds()), "NX")
 	if err != nil {
-		return false, nil
+		return false, fmt.Errorf("get locker %s, err: %v", key, err)
 	}
 	if reply != nil {
 		defer func() {

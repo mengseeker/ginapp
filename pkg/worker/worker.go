@@ -21,7 +21,7 @@ const (
 )
 
 var (
-	WorkerDefaultRetryCount = 3
+	WorkerDefaultRetryCount = 13
 	WorkerDefaultTimeout    = 60 * time.Second
 )
 

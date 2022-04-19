@@ -15,7 +15,7 @@ type ExampleWorker struct {
 }
 
 func (w *ExampleWorker) Perform(ctx context.Context, l *log.Logger) error {
-	l.Info("ExampleWorker running")
+	l.Infof("ExampleWorker running %#v", *w)
 	if w.Timeout != nil {
 		time.Sleep(*w.Timeout)
 	}
@@ -31,7 +31,7 @@ func (w *ExampleWorker) Perform(ctx context.Context, l *log.Logger) error {
 func (w *ExampleWorker) Declare(opts ...worker.WorkerOption) (*worker.WorkConfig, error) {
 	return Runner.Declare(
 		"ExampleWorker",
-		&ExampleWorker{},
+		w,
 		opts...,
 	)
 }
