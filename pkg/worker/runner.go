@@ -110,7 +110,7 @@ func NewRunner(redisCli *redis.Client, threads uint) (*RedisRunner, error) {
 
 // Declare should used before worker Registry
 func (r *RedisRunner) Declare(work Worker, opts ...Option) (*Meta, error) {
-	c, err := NewMetaByWorker(work)
+	c, err := NewMetaByWorker(work, opts...)
 	if err != nil {
 		return nil, err
 	}
