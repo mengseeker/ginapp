@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -11,12 +12,13 @@ type Queue = string
 const (
 	QueueHigh Queue = "High"
 	QueueLow  Queue = "Low"
+
+	DefaultRetryCount = 13
 )
 
 type Meta struct {
 	ID        string
 	Name      string
-	Timeout   time.Duration
 	PerformAt *time.Time
 	Retry     int
 	Queue     Queue
@@ -29,13 +31,16 @@ type Meta struct {
 }
 
 func NewMetaByWorker(w Worker, opts ...Option) (*Meta, error) {
+	raw, err := json.Marshal(w)
+	if err != nil {
+		return nil, err
+	}
 	m := Meta{
-		ID: uuid.NewString(),
-		// Name:      name,
-		// WorkerRaw: raw,
-		// Retry:     WorkerDefaultRetryCount,
-		// Timeout:   WorkerDefaultTimeout,
-		// Queue:     QueueLow,
+		ID:    uuid.NewString(),
+		Name:  w.WorkerName(),
+		Raw:   raw,
+		Retry: DefaultRetryCount,
+		Queue: QueueLow,
 
 		CreatedAt: time.Now(),
 	}
@@ -52,13 +57,6 @@ type Option func(c *Meta)
 func WithRetry(retry int) Option {
 	return func(c *Meta) {
 		c.Retry = retry
-	}
-}
-
-// default WorkerDefaultTimeout
-func WithTimeout(timeout time.Duration) Option {
-	return func(c *Meta) {
-		c.Timeout = timeout
 	}
 }
 

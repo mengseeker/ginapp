@@ -19,10 +19,6 @@ func exampleWorker(c *gin.Context) {
 	case "panic":
 		w.Panic = true
 		r, err = workers.DeclareWorker(w)
-	case "timeout":
-		i := 30 * time.Second
-		w.Timeout = &i
-		r, err = workers.DeclareWorker(w, worker.WithTimeout(time.Second))
 	case "retry":
 		w.Error = "retry"
 		r, err = workers.DeclareWorker(w, worker.WithRetry(3))
