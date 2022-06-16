@@ -142,7 +142,7 @@ func (r *RedisRunner) Run(ctx context.Context) error {
 	// 采集执行状态，通知信息
 	go r.startLoopCollect(ctx)
 
-	logger.Info("workerRunner start %v", r.ID)
+	logger.Infof("workerRunner start %v", r.ID)
 	<-ctx.Done()
 	r.wg.Wait()
 	return nil
@@ -174,7 +174,7 @@ func (r *RedisRunner) checkWorkingWorkers(ctx context.Context) {
 	defer unlocker()
 	workers, err := r.getAllWorkingWorkers()
 	if err != nil {
-		logger.Error("checkWorkingWorkers error %v", err)
+		logger.Errorf("checkWorkingWorkers error %v", err)
 		return
 	}
 	cache := map[string]bool{r.ID: true}
