@@ -122,7 +122,7 @@ func (r *RedisRunner) RegistryWorker(work Worker) error {
 	if _, exist := r.RegistryWorkers[work.WorkerName()]; exist {
 		return fmt.Errorf("worker %s has already registry", work.WorkerName())
 	}
-	r.RegistryWorkers[work.WorkerName()] = reflect.TypeOf(work)
+	r.RegistryWorkers[work.WorkerName()] = reflect.TypeOf(work).Elem()
 	return nil
 }
 
