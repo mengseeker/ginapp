@@ -26,9 +26,13 @@ func RedisLockerE(cli *redis.Client, key, val string, ttl time.Duration, f func(
 }
 
 func RedisLock(cli *redis.Client, key string, ttl time.Duration) (unlocker func(), err error) {
+	return RedisLockV(cli, key, time.Now().String(), ttl)
+}
+
+func RedisLockV(cli *redis.Client, key string, val string, ttl time.Duration) (unlocker func(), err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	reply, err := cli.SetNX(ctx, key, time.Now().Unix(), ttl).Result()
+	reply, err := cli.SetNX(ctx, key, val, ttl).Result()
 	if err != nil {
 		return nil, fmt.Errorf("get locker %s, err: %v", key, err)
 	}
