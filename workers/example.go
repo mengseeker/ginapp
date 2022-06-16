@@ -13,12 +13,12 @@ type ExampleWorker struct {
 	Error   string
 }
 
-func (w *ExampleWorker) WorkerName() string {
+func (w ExampleWorker) WorkerName() string {
 	return "ExampleWorker"
 }
 
-func (w *ExampleWorker) Perform(ctx worker.Context, l *log.Logger) error {
-	l.Infof("ExampleWorker running %#v", *w)
+func (w ExampleWorker) Perform(ctx worker.Context, l *log.Logger) error {
+	l.Infof("ExampleWorker running %#v", w)
 	if w.Timeout != nil {
 		time.Sleep(*w.Timeout)
 	}
