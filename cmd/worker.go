@@ -35,7 +35,7 @@ var workerCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		InitWorker()
 
-		if err := workers.RunLoop(); err != nil {
+		if err := workers.Run(); err != nil {
 			panic(err)
 		}
 	},

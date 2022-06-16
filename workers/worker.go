@@ -2,22 +2,34 @@ package workers
 
 import (
 	"context"
-	"ginapp/pkg/log"
+	"fmt"
 	"ginapp/pkg/worker"
+	"time"
 
-	"github.com/gomodule/redigo/redis"
+	"github.com/go-redis/redis/v8"
 )
 
 var (
-	Runner worker.Runner
-
-	logger = log.NewLogger()
+	runner *worker.RedisRunner
 )
 
 // 初始化worker
-func Initialize(redisUrl string, opts ...redis.DialOption) error {
-	var err error
-	Runner, err = worker.NewRedisRunner(redisUrl, 3, logger, opts...)
+func Initialize(redisUrl string) error {
+	opt, err := redis.ParseURL(redisUrl)
+	if err != nil {
+		return err
+	}
+	cli := redis.NewClient(opt)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*1)
+	defer cancel()
+	err = cli.Ping(ctx).Err()
+	if err != nil {
+		return err
+	}
+	runner, err = worker.NewRunner(cli, 3)
 	if err != nil {
 		return err
 	}
@@ -26,12 +38,27 @@ func Initialize(redisUrl string, opts ...redis.DialOption) error {
 }
 
 func RegistryWorkers() {
-	Runner.RegistryWorker("ExampleWorker", worker.NewJSONWorkerMarshaler(),
-		worker.NewJSONWorkerUnMarshal(func() worker.Worker { return &ExampleWorker{} }),
-	)
+	var err error
+	workers := []worker.Worker{
+		&ExampleWorker{},
+	}
+	for _, w := range workers {
+		err = runner.RegistryWorker(w)
+		if err != nil {
+			panic(fmt.Errorf("register worker %s error: %s", w.WorkerName(), err))
+		}
+	}
 }
 
 // 启动worker循环
-func RunLoop() error {
-	return Runner.RunLoop(context.Background())
+func Run() error {
+	return runner.Run(context.Background())
+}
+
+func DeclareWorker(w worker.Worker, opts ...worker.Option) (string, error) {
+	m, err := runner.Declare(w, opts...)
+	if err != nil {
+		return "", err
+	}
+	return m.ID, nil
 }
