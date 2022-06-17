@@ -27,6 +27,10 @@ func exampleWorker(c *gin.Context) {
 		r, err = workers.DeclareWorker(w)
 	case "delay":
 		r, err = workers.DeclareWorker(w, worker.WithPerformAt(time.Now().Add(10*time.Second)))
+	case "timeout":
+		d := time.Duration(3 * time.Second)
+		w.Timeout = &d
+		r, err = workers.DeclareWorker(w)
 	case "bench":
 		for i := 0; i < 100000; i++ {
 			workers.DeclareWorker(w, worker.WithPerformAt(time.Now().Add(10*time.Second)))
