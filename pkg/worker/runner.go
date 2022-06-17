@@ -43,9 +43,8 @@ const (
 	WaitingQueueCatchBatchSize      = 100                // 等待队列转移批次大小
 	WaitingQueueDataIDSeparator     = "#"                // 等待队列内存储队列名称和ID，使用分隔符连接
 
-	ReadyQueuePullBatchSize = 30                         // 就绪队列请求批量大小
-	NeedPullThresholdRatio  = 3                          // 工作空间数量小于NeedPullThresholdRatio * Threads 时，触发请求就绪队列逻辑
-	ExecChanRatio           = NeedPullThresholdRatio * 2 // 执行队列大小
+	ReadyQueuePullBatchSize = 30 // 就绪队列请求批量大小
+	NeedPullThresholdRatio  = 3  // 工作空间数量小于NeedPullThresholdRatio * Threads 时，触发请求就绪队列逻辑
 )
 
 var (
@@ -93,10 +92,10 @@ func NewRunner(redisCli *redis.Client, threads uint) (*RedisRunner, error) {
 		RegistryWorkers: make(map[string]reflect.Type),
 		wg:              sync.WaitGroup{},
 		threads:         threads,
-		execChan:        make(chan *Meta, ExecChanRatio*threads),
+		execChan:        make(chan *Meta),
 		execResult:      make(chan *Meta),
 		needPull:        make(chan bool),
-		batchPull:       make(chan int),
+		batchPull:       make(chan int, 1),
 	}
 	var err error
 	// 设置成1小时，不使用ants超时控制
@@ -255,11 +254,16 @@ func (r *RedisRunner) transWaitingWorkers(ctx context.Context) {
 func (r *RedisRunner) startLoopPullWorker(ctx context.Context) {
 	defer r.wg.Done()
 	for {
-		err := r.loadReadyWorkers()
+		ws, err := r.loadReadyWorkers()
 		if err != nil {
 			logger.Errorf("loadReadyWorkers: %v", err)
 			time.Sleep(time.Second)
+			continue
 		}
+		if len(ws) > 0 {
+			r.toExec(ws)
+		}
+
 		select {
 		case <-ctx.Done():
 			close(r.execChan)
@@ -271,44 +275,48 @@ func (r *RedisRunner) startLoopPullWorker(ctx context.Context) {
 }
 
 // 从就绪队列加载任务，需要处理优先级情况
-func (r *RedisRunner) loadReadyWorkers() error {
+func (r *RedisRunner) loadReadyWorkers() (ws []string, err error) {
 	unlocker, err := util.RedisLockV(r.redisCli, KeyReadyQueueLocker, r.ID, ReadyQueueLockTerm)
 	if err != nil {
 		if errors.Is(err, util.ErrLockerAlreadySet) {
 			logger.Debug("loadReadyWorkers conflict")
-			return nil
+			return nil, nil
 		}
-		return err
+		return
 	}
 	defer unlocker()
 
 	// get should pull len
 	highCount, lowCount, err := r.shouldBachPullReadyCount()
 	if err != nil {
-		return err
+		return
 	}
 	if highCount == 0 && lowCount == 0 {
-		return nil
+		return
 	}
 
-	if err = r.transReadyToWorking(KeyReadyQueueHigh, highCount); err != nil {
-		return err
+	var w []string
+	if w, err = r.loadAndTransReadyToWorking(KeyReadyQueueHigh, highCount); err != nil {
+		return
 	}
-	if err = r.transReadyToWorking(KeyReadyQueueLow, lowCount); err != nil {
-		return err
+	ws = append(ws, w...)
+	if w, err = r.loadAndTransReadyToWorking(KeyReadyQueueLow, lowCount); err != nil {
+		return
 	}
-	return nil
+	ws = append(ws, w...)
+	r.batchPull <- len(ws)
+	return ws, nil
 }
 
-func (r *RedisRunner) transReadyToWorking(queue string, count int64) error {
+func (r *RedisRunner) loadAndTransReadyToWorking(queue string, count int64) (ws []string, err error) {
 	if count == 0 {
-		return nil
+		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), RedisTimeout)
 	defer cancel()
-	ws, err := r.redisCli.LRange(ctx, queue, 0, count-1).Result()
+	ws, err = r.redisCli.LRange(ctx, queue, 0, count-1).Result()
 	if err != nil {
-		return err
+		return
 	}
 
 	// save to working
@@ -320,19 +328,25 @@ func (r *RedisRunner) transReadyToWorking(queue string, count int64) error {
 	}
 	_, err = r.redisCli.HSet(ctx, KeyWorking, workingVal).Result()
 	if err != nil {
-		return err
+		return
 	}
 
 	// remove from ready
 	ctx, cancel = context.WithTimeout(context.Background(), RedisTimeout)
 	defer cancel()
 	_, err = r.redisCli.LTrim(ctx, queue, count, -1).Result()
-	if err != nil {
-		return err
-	}
+	return
+}
 
+func (r *RedisRunner) toExec(ws []string) {
 	// load works content
-	ctx, cancel = context.WithTimeout(context.Background(), RedisTimeout)
+	var faildCount int
+	defer func() {
+		if faildCount > 0 {
+			r.batchPull <- -1 * faildCount
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), RedisTimeout)
 	defer cancel()
 	pip := r.redisCli.Pipeline()
 	workContents := []string{}
@@ -341,31 +355,30 @@ func (r *RedisRunner) transReadyToWorking(queue string, count int64) error {
 	}
 	rs, err := pip.Exec(ctx)
 	if err != nil {
-		return err
+		logger.Errorf("toExec: %v", err)
+		faildCount = len(ws)
+		return
 	}
 	for _, r := range rs {
 		if r.Err() != nil {
-			return r.Err()
+			logger.Errorf("toExec: %v", r.Err())
+			faildCount++
+			continue
 		}
 		workContents = append(workContents, r.(*redis.StringCmd).Val())
 	}
 
 	// execute
-	var execCount int
-	defer func() {
-		r.batchPull <- execCount
-	}()
 	for _, workContent := range workContents {
 		w := &Meta{}
 		err := json.Unmarshal([]byte(workContent), &w)
 		if err != nil {
 			logger.Errorf("transReadyToWorking: %v", err)
+			faildCount++
 			continue
 		}
-		execCount++
 		r.execChan <- w
 	}
-	return nil
 }
 
 // 从execChan接收worker，并执行
