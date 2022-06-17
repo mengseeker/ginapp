@@ -23,7 +23,7 @@ func Initialize(redisUrl string) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*1)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*3)
 	defer cancel()
 	err = cli.Ping(ctx).Err()
 	if err != nil {
