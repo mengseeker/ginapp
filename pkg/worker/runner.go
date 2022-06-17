@@ -424,9 +424,8 @@ func (r *RedisRunner) startLoopCollect(ctx context.Context) {
 				}
 			}
 			notice.Reset(time.Second)
-		case wc := <-r.execResult:
+		case <-r.execResult:
 			left--
-			r.dealResult(wc)
 			if left <= threshold {
 				select {
 				case r.needPull <- true:
@@ -436,17 +435,6 @@ func (r *RedisRunner) startLoopCollect(ctx context.Context) {
 		case count := <-r.batchPull:
 			left += count
 		}
-	}
-}
-
-func (r *RedisRunner) dealResult(wc *Meta) {
-	if !wc.Success && wc.RetryCount < wc.Retry {
-		r.retryWorker(wc)
-	} else {
-		if !wc.Success {
-			withWorkerLogger(wc).Warn("retry times over, remove")
-		}
-		r.removeWorker(wc)
 	}
 }
 
@@ -536,6 +524,14 @@ func (r *RedisRunner) newExecWorkerFunc() func(item interface{}) {
 				l.Errorf("panic: %s", wc.Error)
 			}
 			r.execResult <- wc
+			if !wc.Success && wc.RetryCount < wc.Retry {
+				r.retryWorker(wc)
+			} else {
+				if !wc.Success {
+					withWorkerLogger(wc).Warn("retry times over, remove")
+				}
+				r.removeWorker(wc)
+			}
 		}()
 
 		// 获取worker对象
