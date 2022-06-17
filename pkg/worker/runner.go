@@ -87,11 +87,6 @@ type RedisRunner struct {
 	status *RunnerStatus
 }
 
-type RunnerStatus struct {
-	ExecCount int64
-	FailCount int64
-}
-
 func NewRunner(redisCli *redis.Client, threads uint) (*RedisRunner, error) {
 	r := RedisRunner{
 		ID:              uuid.NewString() + time.Now().Format("#2006-01-02T15:04:05"),

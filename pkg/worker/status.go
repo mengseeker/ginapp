@@ -1,10 +1,6 @@
 package worker
 
-import "time"
-
-type RedisRunnerStatus struct {
-	StartAt      time.Time
-	PullCount    int
-	ExecCount    int
-	ExecErrCount int
+type RunnerStatus struct {
+	ExecCount int64
+	FailCount int64
 }
