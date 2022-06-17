@@ -15,6 +15,7 @@ import (
 	"ginapp/pkg/util"
 
 	"github.com/go-redis/redis/v8"
+	"github.com/google/uuid"
 	antsv2 "github.com/panjf2000/ants/v2"
 	"go.uber.org/zap"
 )
@@ -36,7 +37,7 @@ const (
 
 	KeyWorking                      = Prefix + "working" // 工作空间
 	WorkingCheckLockerTerm          = 6 * time.Minute    // 工作空间状态检查锁超时时间
-	WaitingQueueCatchMissingWaiting = 10 * time.Second   // 等待队列线程未获取锁时，等待时间
+	WaitingQueueCatchMissingWaiting = 30 * time.Second   // 等待队列线程未获取锁时，等待时间
 	WaitingQueueCatchEmptyWaiting   = 1 * time.Second    // 等待队列线程
 	WaitingQueueLockTerm            = 60 * time.Second   // 等待队列锁有效期
 	WaitingQueueCatchBatchSize      = 100                // 等待队列转移批次大小
@@ -87,7 +88,7 @@ type RedisRunner struct {
 
 func NewRunner(redisCli *redis.Client, threads uint) (*RedisRunner, error) {
 	r := RedisRunner{
-		ID:              time.Now().Format(time.RFC3339Nano),
+		ID:              uuid.NewString() + time.Now().Format("#2006-01-02T15:04:05"),
 		redisCli:        redisCli,
 		RegistryWorkers: make(map[string]reflect.Type),
 		wg:              sync.WaitGroup{},
@@ -164,7 +165,7 @@ func (r *RedisRunner) startRunnerAlive(ctx context.Context) {
 
 // 启动时检查
 func (r *RedisRunner) checkWorkingWorkers(ctx context.Context) {
-	unlocker, err := util.RedisLock(r.redisCli, KeyWorkingCheckLocker, time.Second*10)
+	unlocker, err := util.RedisLockV(r.redisCli, KeyWorkingCheckLocker, r.ID, time.Second*10)
 	if err != nil {
 		if err == util.ErrLockerAlreadySet {
 			logger.Info("checkWorkingWorkers already set")
@@ -219,7 +220,7 @@ func (r *RedisRunner) transWaitingWorkers(ctx context.Context) {
 		}
 	}()
 	// 获取WaitingQueue独占锁
-	unlocker, err := util.RedisLock(r.redisCli, KeyWaitingQueueLocker, WaitingQueueLockTerm)
+	unlocker, err := util.RedisLockV(r.redisCli, KeyWaitingQueueLocker, r.ID, WaitingQueueLockTerm)
 	if err != nil {
 		if err == util.ErrLockerAlreadySet {
 			time.Sleep(WaitingQueueCatchMissingWaiting)
@@ -271,8 +272,12 @@ func (r *RedisRunner) startLoopPullWorker(ctx context.Context) {
 
 // 从就绪队列加载任务，需要处理优先级情况
 func (r *RedisRunner) loadReadyWorkers() error {
-	unlocker, err := util.RedisLock(r.redisCli, KeyReadyQueueLocker, ReadyQueueLockTerm)
+	unlocker, err := util.RedisLockV(r.redisCli, KeyReadyQueueLocker, r.ID, ReadyQueueLockTerm)
 	if err != nil {
+		if errors.Is(err, util.ErrLockerAlreadySet) {
+			logger.Debug("loadReadyWorkers conflict")
+			return nil
+		}
 		return err
 	}
 	defer unlocker()
@@ -392,7 +397,7 @@ func (r *RedisRunner) startLoopCollect(ctx context.Context) {
 	var left int
 	var threshold = int(r.threads * NeedPullThresholdRatio)
 
-	notice := time.NewTimer(time.Second)
+	notice := time.NewTimer(time.Second * 3)
 	defer notice.Stop()
 	for {
 		select {
