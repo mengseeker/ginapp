@@ -27,7 +27,7 @@ const (
 	Prefix = "worker:"
 
 	KeyWorkers           = Prefix + "workers" // 存储work数据
-	KeyRunnerAlivePrefix = Prefix + "alive"   // 设置runner存活状态
+	KeyRunnerAlivePrefix = Prefix + "alive#"  // 设置runner存活状态
 	KeyWaitingQueue      = Prefix + "waiting" // 等待队列
 	ReadyQueueLockTerm   = 60 * time.Second   // 就绪队列锁有效期
 
