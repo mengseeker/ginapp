@@ -83,6 +83,13 @@ type RedisRunner struct {
 
 	// 就绪队列加载worker数量
 	batchPull chan int
+
+	status *RunnerStatus
+}
+
+type RunnerStatus struct {
+	ExecCount int64
+	FailCount int64
 }
 
 func NewRunner(redisCli *redis.Client, threads uint) (*RedisRunner, error) {
@@ -96,6 +103,7 @@ func NewRunner(redisCli *redis.Client, threads uint) (*RedisRunner, error) {
 		execResult:      make(chan *Meta),
 		needPull:        make(chan bool),
 		batchPull:       make(chan int, 1),
+		status:          new(RunnerStatus),
 	}
 	var err error
 	// 设置成1小时，不使用ants超时控制
@@ -410,6 +418,8 @@ func (r *RedisRunner) startLoopCollect(ctx context.Context) {
 	var left int
 	var threshold = int(r.threads * NeedPullThresholdRatio)
 
+	status := r.status
+
 	notice := time.NewTimer(time.Second * 3)
 	defer notice.Stop()
 	for {
@@ -424,7 +434,7 @@ func (r *RedisRunner) startLoopCollect(ctx context.Context) {
 				}
 			}
 			notice.Reset(time.Second)
-		case <-r.execResult:
+		case ws := <-r.execResult:
 			left--
 			if left <= threshold {
 				select {
@@ -432,6 +442,12 @@ func (r *RedisRunner) startLoopCollect(ctx context.Context) {
 				default:
 				}
 			}
+
+			status.ExecCount++
+			if !ws.Success {
+				status.FailCount++
+			}
+			logger.Debugf("execCount: %d, failCount: %d, left: %d", status.ExecCount, status.FailCount, left)
 		case count := <-r.batchPull:
 			left += count
 		}
