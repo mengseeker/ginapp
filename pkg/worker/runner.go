@@ -433,6 +433,7 @@ func (r *RedisRunner) startLoopCollect(ctx context.Context) {
 				default:
 				}
 			}
+			logger.Debugf("execCount: %d, failCount: %d, left: %d", status.ExecCount, status.FailCount, left)
 			notice.Reset(time.Second)
 		case ws := <-r.execResult:
 			left--
@@ -443,11 +444,11 @@ func (r *RedisRunner) startLoopCollect(ctx context.Context) {
 				}
 			}
 
+			// 统计结果
 			status.ExecCount++
 			if !ws.Success {
 				status.FailCount++
 			}
-			logger.Debugf("execCount: %d, failCount: %d, left: %d", status.ExecCount, status.FailCount, left)
 		case count := <-r.batchPull:
 			left += count
 		}
