@@ -515,7 +515,7 @@ func (r *RedisRunner) newExecWorkerFunc() func(item interface{}) {
 	return func(item interface{}) {
 		wc := item.(*Meta)
 		l := withWorkerLogger(wc)
-		l.Info("START WORKER")
+		l.Info("START")
 
 		// 通知处理结果
 		defer func() {
