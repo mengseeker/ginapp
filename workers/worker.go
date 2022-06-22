@@ -3,7 +3,10 @@ package workers
 import (
 	"context"
 	"fmt"
+	"ginapp/pkg/log"
 	"ginapp/pkg/worker"
+	"os"
+	"os/signal"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -11,6 +14,7 @@ import (
 
 var (
 	runner *worker.RedisRunner
+	logger = log.NewLogger()
 )
 
 // 初始化worker
@@ -52,7 +56,18 @@ func RegistryWorkers() {
 
 // 启动worker循环
 func Run() error {
-	return runner.Run(context.Background())
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+	go func() {
+		<-ctx.Done()
+		<-time.After(time.Second)
+		logger.Info("waiting for shutdown, press Ctrl + c to force exit")
+		e, ec := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer ec()
+		<-e.Done()
+		os.Exit(1)
+	}()
+	return runner.Run(ctx)
 }
 
 func DeclareWorker(w worker.Worker, opts ...worker.Option) (string, error) {
